@@ -32,21 +32,7 @@ export default function LoginPage() {
     setLoading(true);
     try {
       if (isSignIn) {
-        // Attempt login
-        try {
-          await login(email, password);
-        } catch (loginErr) {
-          // If user doesn't exist yet, auto-register so ANY email works seamlessly!
-          const derivedName = getDisplayName() + ' Gupta';
-          const regRes = await api.post('/auth/register', {
-            full_name: derivedName,
-            email,
-            password,
-            phone
-          });
-          localStorage.setItem('vaaris_token', regRes.data.access_token);
-          window.location.reload();
-        }
+        await login(email, password);
       } else {
         // Register new account
         const regRes = await api.post('/auth/register', {
@@ -123,7 +109,7 @@ export default function LoginPage() {
               Your digital life deserves a thoughtful afterlife.
             </h1>
             <p className="text-base md:text-lg text-[#8A9E91] font-normal leading-relaxed max-w-lg pt-2">
-              Decide what happens to your accounts, memories and assets — while you are still in control.
+              Decide what happens to your accounts, memories and assets ï¿½ while you are still in control.
             </p>
           </div>
         </div>

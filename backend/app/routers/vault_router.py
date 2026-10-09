@@ -25,6 +25,34 @@ def enforce_rate_limit(key: str, max_requests: int = 5, window_seconds: int = 60
     clean_history.append(now)
     _rate_limits[key] = clean_history
 
+def validate_vault_shares(data, user: models.User, db: Session):
+    if len(data.shares) != data.total_shares:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Expected {data.total_shares} sealed shares for the configured policy; received {len(data.shares)}."
+        )
+
+    indices = [share.share_index for share in data.shares]
+    if sorted(indices) != list(range(1, data.total_shares + 1)):
+        raise HTTPException(status_code=400, detail="Share indices must be unique and cover 1 through total_shares.")
+
+    nominee_ids = [share.nominee_id for share in data.shares if share.nominee_id]
+    if len(nominee_ids) != len(set(nominee_ids)):
+        raise HTTPException(status_code=400, detail="Each nominee can hold only one share.")
+    if nominee_ids:
+        owned_nominees = {
+            nominee.id for nominee in db.query(models.TrustedHeir).filter(
+                models.TrustedHeir.user_id == user.id,
+                models.TrustedHeir.id.in_(nominee_ids)
+            ).all()
+        }
+        if owned_nominees != set(nominee_ids):
+            raise HTTPException(status_code=400, detail="Shares may only be assigned to your own nominees.")
+
+    for share in data.shares:
+        if not share.encrypted_share_blob:
+            raise HTTPException(status_code=400, detail="Every share must be sealed before it is stored.")
+
 # Helper: Log Vault Audit Event (sanitized, zero-knowledge: never stores plain keys or shares)
 def log_vault_audit(db: Session, vault_id: str, action: str, status: str, details: str, ip_address: Optional[str] = None, actor_id: Optional[str] = None):
     try:
@@ -60,15 +88,7 @@ def create_vault(
     if not data.ciphertext or not data.nonce:
         raise HTTPException(status_code=400, detail="Ciphertext and 96-bit nonce/IV are strictly required.")
     
-    if len(data.shares) != 3:
-        raise HTTPException(
-            status_code=400,
-            detail=f"A valid 2-of-3 Shamir scheme requires exactly 3 nominee shares. Received {len(data.shares)}."
-        )
-
-    for share in data.shares:
-        if not share.encrypted_share_blob:
-            raise HTTPException(status_code=400, detail="Nominee shares must be sealed with nominee public keys.")
+    validate_vault_shares(data, user, db)
 
     client_ip = request.client.host if request.client else "127.0.0.1"
 
@@ -107,7 +127,7 @@ def create_vault(
         actor_id=user.id,
         action="CREATE",
         status="SUCCESS",
-        details=f"Secure vault '{new_vault.name}' created with 2-of-3 Shamir threshold and Curve25519 sealed shares.",
+        details=f"Secure vault '{new_vault.name}' created with {new_vault.threshold}-of-{new_vault.total_shares} Shamir threshold and Curve25519 sealed shares.",
         ip_address=client_ip
     )
 
@@ -211,7 +231,7 @@ def complete_vault_recovery(
     db: Session = Depends(get_db)
 ):
     """
-    Complete recovery by verifying that at least 2 distinct nominee shares are present.
+    Release ciphertext only to the vault owner or a nominee after the stored policy is met.
     Rate-limited (5 attempts/min).
     Returns the ciphertext and nonce so the client can locally reconstruct the DEK and decrypt.
     """
@@ -221,6 +241,19 @@ def complete_vault_recovery(
     vault = db.query(models.Vault).filter(models.Vault.id == data.vault_id).first()
     if not vault:
         raise HTTPException(status_code=404, detail="Vault not found")
+
+    if vault.user_id != user.id:
+        user_nominee = db.query(models.TrustedHeir).filter(
+            models.TrustedHeir.user_id == vault.user_id,
+            models.TrustedHeir.email == user.email
+        ).first()
+        if not user_nominee:
+            log_vault_audit(
+                db, vault.id, "RECOVERY_COMPLETE", "FAILED",
+                f"Unauthorized recovery completion attempt by {user.email}",
+                client_ip, user.id
+            )
+            raise HTTPException(status_code=403, detail="Unauthorized: You cannot complete recovery for this vault.")
 
     if len(data.submitted_shares) < vault.threshold:
         log_vault_audit(db, data.vault_id, "RECOVERY_COMPLETE", "FAILED", f"Insufficient shares provided: {len(data.submitted_shares)} < {vault.threshold}", client_ip, user.id)
@@ -237,12 +270,17 @@ def complete_vault_recovery(
             detail="Duplicate shares submitted. Two copies of the same share cannot reconstruct the polynomial secret."
         )
 
+    available_indices = {share.share_index for share in vault.shares}
+    if not set(submitted_indices).issubset(available_indices):
+        log_vault_audit(db, data.vault_id, "RECOVERY_COMPLETE", "FAILED", "Unknown share index submitted", client_ip, user.id)
+        raise HTTPException(status_code=400, detail="One or more submitted shares do not belong to this vault.")
+
     log_vault_audit(
         db,
         vault.id,
         "RECOVERY_COMPLETE",
         "SUCCESS",
-        f"Recovery payload released to {user.email} after receiving {len(data.submitted_shares)} valid share proofs.",
+        f"Recovery payload released to {user.email} after receiving {len(data.submitted_shares)} distinct stored share indices.",
         client_ip,
         user.id
     )
@@ -253,7 +291,7 @@ def complete_vault_recovery(
         "nonce": vault.nonce,
         "algorithm": vault.algorithm,
         "version": vault.version,
-        "message": "Recovery criteria satisfied. Ciphertext and nonce released for client-side decryption."
+        "message": "Recovery policy threshold satisfied. Ciphertext and nonce released for client-side decryption."
     }
 
 @router.post("/rotate-key", response_model=schemas.VaultOut)
@@ -265,7 +303,7 @@ def rotate_vault_key(
 ):
     """
     Rotate vault key: Replaces existing ciphertext, nonce, and sealed shares with
-    a newly generated DEK and new 2-of-3 shares encrypted by client.
+    a newly generated DEK and newly sealed shares encrypted by the client.
     Increments vault version number.
     """
     vault = db.query(models.Vault).filter(models.Vault.id == data.vault_id).first()
@@ -275,8 +313,7 @@ def rotate_vault_key(
     if vault.user_id != user.id:
         raise HTTPException(status_code=403, detail="Access denied: Only the vault owner can rotate encryption keys.")
 
-    if len(data.shares) != 3:
-        raise HTTPException(status_code=400, detail="Key rotation requires exactly 3 newly split nominee shares.")
+    validate_vault_shares(data, user, db)
 
     client_ip = request.client.host if request.client else "127.0.0.1"
 
@@ -285,6 +322,8 @@ def rotate_vault_key(
     vault.algorithm = data.algorithm
     vault.version = vault.version + 1
     vault.salt = data.salt
+    vault.threshold = data.threshold
+    vault.total_shares = data.total_shares
 
     db.query(models.VaultShare).filter(models.VaultShare.vault_id == vault.id).delete()
     for s in data.shares:
@@ -306,7 +345,7 @@ def rotate_vault_key(
         vault.id,
         "KEY_ROTATION",
         "SUCCESS",
-        f"Vault DEK rotated to version {vault.version}. New 2-of-3 shares sealed for nominees.",
+        f"Vault DEK and Shamir policy rotated to version {vault.version}. New {vault.threshold}-of-{vault.total_shares} shares sealed for nominees.",
         client_ip,
         user.id
     )
@@ -421,4 +460,3 @@ def api_reconstruct_secret(data: schemas.ShamirReconstructRequest):
         }
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Reconstruction failed: {str(e)}")
-

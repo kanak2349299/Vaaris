@@ -1,45 +1,42 @@
-# Vaaris - Digital Legacy Management Platform
+# Vaaris — Digital Legacy Management
 
-> **"Your Data. Your Wishes. Your Legacy."**
+Vaaris helps people document what should happen to their digital assets and how trusted nominees can receive access. It includes an encrypted vault, a digital-asset inventory, nominee planning, recovery workflows, and an evidence-led proof-of-death review flow.
 
-Vaaris empowers you to decide in advance what should happen to your digital assets (emails, social media, cloud files, crypto wallets, important documents) when you are no longer available. It enables secure, verified handover to trusted nominees using **Shamir's Secret Sharing** cryptography and a multi-stage posthumous verification pipeline.
+## Features
 
----
+- **Account-specific setup:** Registration creates an empty account. Example nominees and assets are available only in the explicitly selected demo account.
+- **Legacy planner and graph:** Track accounts, subscriptions, cloud storage, domains, wallets, important files, actions, and nominee assignments. The graph uses only the inventory you enter; Vaaris does not scan private accounts.
+- **Proof-of-death review:** Record independent evidence references, compare corroborating and conflicting findings, request human review, and record an approval or rejection with a hash-linked audit trail. Beneficiary-facing proof contains the decision hash, not source documents.
+- **Encrypted vault:** Sensitive fields are encrypted in the browser before upload. The API stores ciphertext and nominee-sealed recovery shares.
+- **Adaptive trustee recovery:** Split the vault key across 2–5 nominees with a threshold from 2 up to the share count. Changing an existing vault's policy requires recovering it and rotating the encryption key and all shares together.
+- **Nominees and heir portal:** Assign assets, manage access instructions, and provide a nominee-facing portal.
+- **Verification triggers and notifications:** Explore the multi-stage handover flow and notification integrations/simulator.
 
-## Key Features
+## User flow
 
-- **Secure Authentication** - JWT-based login with bcrypt password hashing
-- **Legacy Planner** - Register digital assets with desired actions (Transfer, Archive, Memorialize, Delete)
-- **Trusted Nominees** - Designate heirs with unique access tokens and relationship metadata
-- **Shamir's Secret Sharing Vault** - Split vault recovery secrets into 3 cryptographic shares (2-of-3 threshold)
-- **4-Stage Verification Trigger** - Simulated posthumous pipeline (Trigger > Grace Period > Verification > Handover)
-- **WhatsApp Notifications** - Twilio API integration with realistic mock simulator fallback
-- **Heir Portal** - Standalone secure view for nominees to receive inherited assets and instructions
-- **Interactive Cursor Glow** - Premium ambient lighting that follows cursor movement across all pages
+```mermaid
+flowchart TD
+    A[Register or sign in] --> B[Document assets]
+    B --> C[Add nominees and assign assets]
+    C --> D[Create encrypted vault]
+    D --> E[Choose trustee count and recovery threshold]
+    E --> F[Encrypt data in browser and seal one share per nominee]
+    F --> G[Store ciphertext and sealed shares on API]
+    B --> H[Review digital legacy graph]
+    I[Add independent evidence references] --> J[Compare evidence and flag conflicts]
+    J --> K[Request human review]
+    K --> L[Record approval or rejection and audit proof]
+    L --> M[Share decision proof without source documents]
+```
 
----
+## Local development
 
-## Tech Stack
+### Requirements
 
-| Layer | Technology |
-|-------|-----------|
-| Frontend | React 18, Vite, Tailwind CSS, Lucide Icons |
-| Backend | Python 3.11, FastAPI, SQLAlchemy, Pydantic v2 |
-| Database | SQLite (zero-config) + Supabase PostgreSQL (production) |
-| Crypto | Shamir's Secret Sharing over GF(2^521 - 1) Mersenne Prime |
-| Notifications | Twilio WhatsApp API + High-Fidelity Mock Simulator |
-| Security | JWT, bcrypt, zero plain-text 3rd party passwords |
+- Python 3.11 or newer
+- Node.js 18 or newer and npm
 
----
-
-## Quick Start (Local Development)
-
-### Prerequisites
-- Python 3.11+
-- Node.js 18+
-- npm
-
-### 1. Backend Setup
+### Backend
 
 ```bash
 cd backend
@@ -47,9 +44,11 @@ pip install -r requirements.txt
 python -m uvicorn app.main:app --reload --port 8000
 ```
 
-The backend auto-creates the SQLite database and seeds demo data on first run.
+The API creates its configured database on startup. Configure database and optional integration credentials through environment variables; do not commit `.env` files.
 
-### 2. Frontend Setup
+### Frontend
+
+In another terminal:
 
 ```bash
 cd frontend
@@ -57,117 +56,30 @@ npm install
 npm run dev
 ```
 
-### 3. Open in Browser
+Open <http://localhost:5173>. The API docs are at <http://localhost:8000/docs>.
 
-- **Frontend**: http://localhost:5173
-- **Backend API Docs**: http://localhost:8000/docs
+## Demo account
 
-### 4. Demo Login
+Choose **Try the demo account** on the sign-in page to seed and enter the demo profile. Demo records are intentionally separate from accounts created through registration.
 
-- **Email**: himangi@example.com
-- **Password**: legacy2026
-- Or click **"Try the demo account"** button for instant access
+## Security and scope notes
 
----
+- Proof-of-death evidence references, decisions, and hash-chain audit entries currently persist in that browser's local storage, scoped by account. They are not a server-side or tamper-proof legal record; a local hash chain can detect edits but cannot prevent them.
+- Evidence sources are entered by the account holder. Vaaris does not currently have an official government death-record verification integration. Use official channels such as the relevant state e-District service for authoritative checks.
+- Legacy graph reminders are browser-local. No connected account is scanned unless the user explicitly provides inventory or authorizes a future integration.
+- The API never needs third-party account passwords. Do not store them in asset instructions.
+- Trustee private-key files must be kept by their respective custodians. Vaaris cannot recover a lost private key.
+- Changing a vault recovery threshold is a cryptographic operation: recover the contents, generate a fresh encryption key, encrypt again, and replace the sealed shares in the same rotation. Editing only the threshold metadata is unsafe.
+- Configure strong application secrets, HTTPS, database access controls, backups, and deployment-specific rate limits before production use.
 
-## Complete User Flow
+## Repository layout
 
-```
-Login -> Dashboard Overview -> Add Digital Asset -> Add Nominee
--> Create Legacy Plan -> Configure Shamir Vault (3-way split)
--> Simulate Trigger (4 stages) -> WhatsApp Notification
--> Heir Portal View -> Acknowledge Custody
-```
-
----
-
-## Twilio WhatsApp Setup (Optional)
-
-1. Create a Twilio account at https://www.twilio.com
-2. Enable the WhatsApp Sandbox
-3. Copy your credentials to `.env`:
-
-```env
-TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-TWILIO_AUTH_TOKEN=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-TWILIO_WHATSAPP_NUMBER=+14155238886
+```text
+backend/       FastAPI API, SQLAlchemy models, authentication, and services
+frontend/      React + Vite application
+database/      Database schemas and seed scripts
 ```
 
-If Twilio is not configured, the app uses a high-fidelity in-browser WhatsApp simulator.
+## Optional integrations
 
----
-
-## Supabase Setup (Optional)
-
-1. Create a project at https://supabase.com
-2. Run `database/supabase_schema.sql` in the SQL Editor
-3. Update `.env`:
-
-```env
-DATABASE_TYPE=supabase
-DATABASE_URL=postgresql://postgres:[PASSWORD]@db.[REF].supabase.co:5432/postgres
-```
-
----
-
-## Project Structure
-
-```
-vaaris/
-+-- backend/
-|   +-- app/
-|   |   +-- main.py              # FastAPI server
-|   |   +-- config.py            # Environment settings
-|   |   +-- database.py          # SQLAlchemy engine
-|   |   +-- models.py            # ORM models
-|   |   +-- schemas.py           # Pydantic schemas
-|   |   +-- auth.py              # JWT + bcrypt auth
-|   |   +-- seed_data.py         # Demo data seeder
-|   |   +-- services/
-|   |   |   +-- shamir.py        # Shamir Secret Sharing (GF 2^521-1)
-|   |   |   +-- notification_service.py
-|   |   |   +-- verification_engine.py
-|   |   +-- routers/             # REST API endpoints
-|   +-- requirements.txt
-+-- frontend/
-|   +-- src/
-|   |   +-- components/          # Sidebar, Header, Modals
-|   |   +-- pages/               # All application pages
-|   |   +-- context/             # Auth state management
-|   |   +-- services/            # API client
-|   |   +-- App.jsx              # Root with cursor glow
-|   +-- package.json
-|   +-- tailwind.config.js
-|   +-- vite.config.js
-+-- database/
-|   +-- supabase_schema.sql      # PostgreSQL schema with RLS
-|   +-- seed_demo.sql
-+-- .env.example
-+-- README.md
-```
-
----
-
-## Security Principles
-
-- Zero plain-text storage of third-party account passwords
-- All access directives use recovery codes, Shamir shares, or safe deposit references
-- JWT bearer token authentication with configurable expiry
-- Environment variables for all secrets
-- Row Level Security (RLS) policies for Supabase deployment
-
----
-
-## Hackathon Presentation Pitch
-
-**Problem**: When someone passes away, their digital life (emails, social media, cloud files, crypto wallets) remains locked and inaccessible. Physical estates have legal frameworks; digital estates do not.
-
-**Solution**: Vaaris is a privacy-first digital legacy vault that uses Shamir's Secret Sharing cryptography to split recovery secrets across multiple trustees. A 4-stage posthumous verification pipeline ensures no premature handover, and WhatsApp notifications keep nominees informed.
-
-**Innovation**: Real mathematical cryptography (Mersenne prime field polynomial interpolation) applied to estate planning - not just a CRUD app.
-
----
-
-Built with care for hackathon judges. Every button works. Every flow is real.
-
-**Vaaris** - Your Data. Your Wishes. Your Legacy.
+Twilio WhatsApp and Supabase can be configured with environment variables. See `.env.example` for the available setting names and never commit real credentials.

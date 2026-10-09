@@ -3,6 +3,7 @@ VAARIS ZERO-KNOWLEDGE SECURE VAULT BACKEND API TEST SUITE
 Runs directly with standard Python (using FastAPI TestClient)
 """
 import sys, os
+from uuid import uuid4
 from fastapi.testclient import TestClient
 from app.main import app
 from app.database import Base, engine, SessionLocal
@@ -105,6 +106,12 @@ def test_vault_access_control(vault_id):
     attacker_token = get_attacker_token()
     bad_res = client.get(f"/api/vault/{vault_id}", headers={"Authorization": f"Bearer {attacker_token}"})
     assert bad_res.status_code == 403, "Attacker should be forbidden from accessing owner vault"
+    completion_res = client.post(
+        "/api/vault/recovery/complete",
+        json={"vault_id": vault_id, "submitted_shares": [{"share_index": 1}, {"share_index": 2}]},
+        headers={"Authorization": f"Bearer {attacker_token}"},
+    )
+    assert completion_res.status_code == 403, "Attacker should not complete recovery for another user's vault"
     print("  ✓ PASSED: Unauthorized user cannot access another user's vault (403 Forbidden).")
 
 def test_vault_recovery_flow(vault_id):
@@ -200,6 +207,105 @@ def test_vault_delete(vault_id):
     assert get_res.status_code == 404
     print("  ✓ PASSED: Vault and share records permanently deleted.")
 
+def test_new_account_is_empty_and_authentication_is_explicit():
+    email = f"new-{uuid4().hex}@vaaris.test"
+    registration = client.post("/api/auth/register", json={
+        "full_name": "New Vaaris User",
+        "email": email,
+        "password": "valid-test-password",
+    })
+    assert registration.status_code == 200, registration.text
+    token = registration.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+    assert client.get("/api/heirs", headers=headers).json() == []
+    assert client.get("/api/assets", headers=headers).json() == []
+    assert client.post("/api/auth/login", json={
+        "email": email,
+        "password": "incorrect-password",
+    }).status_code == 401
+    assert client.post("/api/auth/login", json={
+        "email": f"missing-{uuid4().hex}@vaaris.test",
+        "password": "valid-test-password",
+    }).status_code == 401
+    assert client.post("/api/auth/register", json={
+        "full_name": "New Vaaris User",
+        "email": email,
+        "password": "valid-test-password",
+    }).status_code == 409
+    print("  ✓ PASSED: New accounts start empty; unknown and invalid logins are rejected.")
+
+def test_adaptive_threshold_and_secure_policy_rotation():
+    headers = {"Authorization": f"Bearer {get_owner_token()}"}
+    shares = [
+        {
+            "share_index": index,
+            "custodian_name": f"Trustee {index}",
+            "encrypted_share_blob": f"sealed-share-{index}",
+            "nominee_public_key": f"public-key-{index}",
+        }
+        for index in range(1, 6)
+    ]
+    create_payload = {
+        "name": "Adaptive policy test",
+        "ciphertext": "ciphertext-before",
+        "nonce": "nonce-before",
+        "threshold": 3,
+        "total_shares": 5,
+        "shares": shares,
+    }
+    created = client.post("/api/vault", json=create_payload, headers=headers)
+    assert created.status_code == 201, created.text
+    vault_id = created.json()["id"]
+
+    recovery_request = client.post(
+        "/api/vault/recovery/request",
+        json={"vault_id": vault_id},
+        headers=headers,
+    )
+    assert recovery_request.status_code == 200
+    assert recovery_request.json()["threshold"] == 3
+    assert len(recovery_request.json()["required_nominees"]) == 5
+    two_share_attempt = client.post("/api/vault/recovery/complete", json={
+        "vault_id": vault_id,
+        "submitted_shares": [{"share_index": 1}, {"share_index": 2}],
+    }, headers=headers)
+    assert two_share_attempt.status_code == 400
+
+    rotation = client.post("/api/vault/rotate-key", json={
+        "vault_id": vault_id,
+        "ciphertext": "ciphertext-after",
+        "nonce": "nonce-after",
+        "version": 1,
+        "threshold": 4,
+        "total_shares": 5,
+        "shares": [
+            {**share, "encrypted_share_blob": f"rotated-share-{share['share_index']}"}
+            for share in shares
+        ],
+    }, headers=headers)
+    assert rotation.status_code == 200, rotation.text
+    assert rotation.json()["threshold"] == 4
+    assert rotation.json()["total_shares"] == 5
+    assert rotation.json()["version"] == 2
+
+    three_share_attempt = client.post("/api/vault/recovery/complete", json={
+        "vault_id": vault_id,
+        "submitted_shares": [{"share_index": 1}, {"share_index": 2}, {"share_index": 3}],
+    }, headers=headers)
+    assert three_share_attempt.status_code == 400
+    invalid_index_attempt = client.post("/api/vault/recovery/complete", json={
+        "vault_id": vault_id,
+        "submitted_shares": [{"share_index": 1}, {"share_index": 2}, {"share_index": 99}, {"share_index": 4}],
+    }, headers=headers)
+    assert invalid_index_attempt.status_code == 400
+    four_share_attempt = client.post("/api/vault/recovery/complete", json={
+        "vault_id": vault_id,
+        "submitted_shares": [{"share_index": index} for index in range(1, 5)],
+    }, headers=headers)
+    assert four_share_attempt.status_code == 200
+    client.delete(f"/api/vault/{vault_id}", headers=headers)
+    print("  ✓ PASSED: 3-of-5 recovery and 4-of-5 key/share rotation enforce their thresholds.")
+
 if __name__ == "__main__":
     print("\n======================================================")
     print("🔒 VAARIS SECURE VAULT: BACKEND API TEST SUITE")
@@ -211,6 +317,8 @@ if __name__ == "__main__":
     test_vault_recovery_threshold_violations(vault_id)
     test_vault_key_rotation(vault_id)
     test_vault_delete(vault_id)
+    test_new_account_is_empty_and_authentication_is_explicit()
+    test_adaptive_threshold_and_secure_policy_rotation()
     print("\n------------------------------------------------------")
-    print("ALL BACKEND API TESTS PASSED SUCCESSFULLY! (6/6)")
+    print("ALL BACKEND API TESTS PASSED SUCCESSFULLY! (8/8)")
     print("------------------------------------------------------\n")

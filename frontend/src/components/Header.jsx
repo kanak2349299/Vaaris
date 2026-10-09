@@ -9,7 +9,9 @@ export default function Header({ activeTab, onOpenWhatsApp, onOpenHeirView }) {
     switch (activeTab) {
       case 'overview': return 'Overview';
       case 'identity': return 'Digital identity';
+      case 'proof-of-death': return 'Proof of death';
       case 'legacy-planner': return 'Legacy planner';
+      case 'legacy-graph': return 'Digital legacy graph';
       case 'vault': return 'Vault (Shamir SSS)';
       case 'nominees': return 'Nominees';
       case 'check-ins': return 'Check-ins (Trigger Engine)';
@@ -51,8 +53,11 @@ export default function Header({ activeTab, onOpenWhatsApp, onOpenHeirView }) {
 
         {/* User Badge */}
         <div className="w-7 h-7 rounded-full bg-[#152E1E] border border-[#10B981]/30 flex items-center justify-center text-xs font-semibold text-[#34D399]">
-          {user?.full_name ? user.full_name.split(' ').map(n => n[0]).join('').slice(0, 2) : 'HG'}
+          {user?.full_name ? user.full_name.split(' ').map(n => n[0]).join('').slice(0, 2) : 'VA'}
         </div>
+        <span className="text-xs text-[#C7D5C9] max-w-36 truncate" title={user?.full_name || ''}>
+          {user?.full_name}
+        </span>
       </div>
     </header>
   );

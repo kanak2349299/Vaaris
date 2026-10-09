@@ -8,7 +8,9 @@ import {
   Clock, 
   BookOpen, 
   LogOut, 
-  ShieldCheck 
+  ShieldCheck,
+  FileCheck2,
+  Network
 } from 'lucide-react';
 import { AuthContext } from '../context/AuthContext';
 
@@ -18,8 +20,10 @@ export default function Sidebar({ activeTab, setActiveTab, onOpenWhatsApp }) {
   const navItems = [
     { id: 'overview', label: 'Overview', icon: LayoutGrid },
     { id: 'identity', label: 'Digital identity', icon: Fingerprint },
+    { id: 'proof-of-death', label: 'Proof of death', icon: FileCheck2 },
     { id: 'legacy-planner', label: 'Legacy planner', icon: ClipboardCheck },
-    { id: 'vault', label: 'Vault', icon: Archive, badge: '3' },
+    { id: 'legacy-graph', label: 'Legacy graph', icon: Network },
+    { id: 'vault', label: 'Vault', icon: Archive, badge: '2-5' },
     { id: 'nominees', label: 'Nominees', icon: Users },
     { id: 'check-ins', label: 'Check-ins', icon: Clock },
     { id: 'guides', label: 'Guides', icon: BookOpen },
@@ -101,14 +105,14 @@ export default function Sidebar({ activeTab, setActiveTab, onOpenWhatsApp }) {
         {/* User Profile Card */}
         <div className="flex items-center gap-3 px-2 pt-2 border-t border-[#14241A]/60">
           <div className="w-8 h-8 rounded-full bg-[#152E1E] border border-[#10B981]/30 flex items-center justify-center text-xs font-bold text-[#34D399]">
-            {user?.full_name ? user.full_name.split(' ').map(n => n[0]).join('').slice(0, 2) : 'HG'}
+            {user?.full_name ? user.full_name.split(' ').map(n => n[0]).join('').slice(0, 2) : 'VA'}
           </div>
           <div className="flex flex-col text-left overflow-hidden">
             <span className="text-xs font-semibold text-white truncate">
-              {user?.full_name || 'Himangi Gupta'}
+              {user?.full_name || 'Account'}
             </span>
             <span className="text-[10px] text-[#5D7765] truncate">
-              Personal account
+              {user?.email || 'Personal account'}
             </span>
           </div>
         </div>

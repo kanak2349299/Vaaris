@@ -52,6 +52,8 @@ function SecureVaultTab() {
 
   // Vault creation form
   const [vaultName, setVaultName] = useState('My Digital Legacy Vault');
+  const [threshold, setThreshold] = useState(2);
+  const [totalShares, setTotalShares] = useState(3);
   const [fields, setFields] = useState([
     { id: 1, label: 'Bank Account Numbers', value: '', show: false },
     { id: 2, label: 'Important Passwords',  value: '', show: false },
@@ -66,6 +68,8 @@ function SecureVaultTab() {
   const [saving, setSaving] = useState(false);
   const [saveResult, setSaveResult] = useState(null);
   const [saveError, setSaveError] = useState('');
+  const [rotationError, setRotationError] = useState('');
+  const [rotating, setRotating] = useState(false);
 
   // Vault list
   const [vaults, setVaults] = useState([]);
@@ -75,10 +79,7 @@ function SecureVaultTab() {
   const [recovering, setRecovering] = useState(false);
   const [recoveryVaultId, setRecoveryVaultId] = useState('');
   const [recoveryInfo, setRecoveryInfo] = useState(null);
-  const [submittedShares, setSubmittedShares] = useState([
-    { share_index: null, private_key: '' },
-    { share_index: null, private_key: '' },
-  ]);
+  const [submittedShares, setSubmittedShares] = useState([]);
   const [recoveryResult, setRecoveryResult] = useState(null);
   const [recoveryError, setRecoveryError] = useState('');
   const [decryptedData, setDecryptedData] = useState(null);
@@ -141,16 +142,15 @@ function SecureVaultTab() {
     setSaveError('');
     setSaveResult(null);
 
-    // Need exactly 3 nominees with generated keypairs
-    const activeNominees = nominees.slice(0, 3);
-    if (activeNominees.length < 3) {
-      setSaveError(`You need at least 3 nominees. Currently you have ${nominees.length}. Add nominees on the Nominees page first.`);
+    const activeNominees = nominees.slice(0, totalShares);
+    if (activeNominees.length < totalShares) {
+      setSaveError(`You need ${totalShares} nominees for this recovery policy. Currently you have ${nominees.length}. Add nominees on the Nominees page first.`);
       return;
     }
 
     const missingKeys = activeNominees.filter(n => !nomineeKeys[n.id]?.publicKey);
     if (missingKeys.length > 0) {
-      setSaveError(`Generate Curve25519 keypairs for all 3 nominees before saving. Missing: ${missingKeys.map(n => n.full_name).join(', ')}`);
+      setSaveError(`Generate Curve25519 keypairs for all ${totalShares} nominees before saving. Missing: ${missingKeys.map(n => n.full_name).join(', ')}`);
       return;
     }
 
@@ -168,15 +168,16 @@ function SecureVaultTab() {
     }
 
     setSaving(true);
+    let dek;
     try {
       // 1. Generate DEK
-      const dek = generateDEK();
+      dek = generateDEK();
 
       // 2. Encrypt payload
       const encrypted = await encryptVaultData(payload, dek);
 
-      // 3. Split DEK into 3 Shamir shares
-      const shamirShares = splitDEKIntoShamirShares(dek, 2, 3);
+      // 3. Split DEK using the selected recovery policy
+      const shamirShares = splitDEKIntoShamirShares(dek, threshold, totalShares);
 
       // 4. Seal each share with the nominee's public key
       const sealedShares = activeNominees.map((nominee, i) => ({
@@ -190,23 +191,22 @@ function SecureVaultTab() {
       // 5. POST to backend (server only sees ciphertext + sealed blobs)
       const res = await api.post('/vault', {
         name: vaultName,
-        description: `Secure vault with 2-of-3 Shamir threshold`,
+        description: `Secure vault with ${threshold}-of-${totalShares} Shamir threshold`,
         ciphertext: encrypted.ciphertext,
         nonce: encrypted.nonce,
         algorithm: encrypted.algorithm,
         version: encrypted.version,
-        threshold: 2,
-        total_shares: 3,
+        threshold,
+        total_shares: totalShares,
         shares: sealedShares,
       });
 
       setSaveResult(res.data);
-      // Wipe DEK from memory immediately
-      dek.fill(0);
       setVaults(prev => [res.data, ...prev]);
     } catch (err) {
       setSaveError(err.response?.data?.detail || err.message || 'Encryption failed');
     } finally {
+      if (dek) dek.fill(0);
       setSaving(false);
     }
   };
@@ -221,10 +221,12 @@ function SecureVaultTab() {
     try {
       const r = await api.post('/vault/recovery/request', { vault_id: recoveryVaultId });
       setRecoveryInfo(r.data);
-      setSubmittedShares([
-        { share_index: r.data.required_nominees[0]?.share_index, private_key: '' },
-        { share_index: r.data.required_nominees[1]?.share_index, private_key: '' },
-      ]);
+      setThreshold(r.data.threshold);
+      setTotalShares(r.data.total_shares);
+      setSubmittedShares(Array.from({ length: r.data.threshold }, (_, index) => ({
+        share_index: r.data.required_nominees[index]?.share_index ?? null,
+        private_key: '',
+      })));
     } catch (err) {
       setRecoveryError(err.response?.data?.detail || 'Recovery request failed');
     }
@@ -249,6 +251,7 @@ function SecureVaultTab() {
     setRecoveryResult(null);
     setDecryptedData(null);
     setRecovering(true);
+    let dek;
     try {
       // 1. Unseal shares client-side
       const unsealedShares = [];
@@ -260,36 +263,101 @@ function SecureVaultTab() {
         const rawShare = unsealShareWithNomineeKey(nomineeInfo.encrypted_share_blob, private_key.trim());
         unsealedShares.push({ share_index, raw_share: rawShare });
       }
+      if (new Set(unsealedShares.map(share => share.share_index)).size !== unsealedShares.length) {
+        throw new Error('Choose a different share for each recovery slot.');
+      }
 
-      // 2. Validate with backend (proof of possession of 2 shares)
+      // 2. Validate with backend that the configured share threshold is met
       const res = await api.post('/vault/recovery/complete', {
         vault_id: recoveryVaultId,
         submitted_shares: unsealedShares.map(s => ({ share_index: s.share_index })),
       });
 
       // 3. Reconstruct DEK client-side
-      const dek = reconstructDEKFromShamirShares(unsealedShares.map(s => s.raw_share));
+      dek = reconstructDEKFromShamirShares(unsealedShares.map(s => s.raw_share));
 
       // 4. Decrypt vault payload
       const plaintext = await decryptVaultData(res.data.ciphertext, res.data.nonce, dek);
-      dek.fill(0);
 
       setDecryptedData(plaintext);
       setRecoveryResult({ message: res.data.message, algorithm: res.data.algorithm });
     } catch (err) {
       setRecoveryError(err.message || 'Recovery failed');
     } finally {
+      if (dek) dek.fill(0);
       setRecovering(false);
     }
   };
 
-  const activeNominees = nominees.slice(0, 3);
+  const handleRotateRecoveredVault = async () => {
+    setRotationError('');
+    if (!recoveryInfo || !decryptedData) {
+      setRotationError('Recover and decrypt this vault before changing its policy.');
+      return;
+    }
+    if (activeNominees.length !== totalShares) {
+      setRotationError(`Add ${totalShares} nominees before rotating this vault.`);
+      return;
+    }
+    const missingKeys = activeNominees.filter(n => !nomineeKeys[n.id]?.publicKey || !nomineeKeys[n.id]?.downloaded);
+    if (missingKeys.length) {
+      setRotationError(`Generate and download key files for all selected nominees first: ${missingKeys.map(n => n.full_name).join(', ')}`);
+      return;
+    }
+
+    setRotating(true);
+    let dek;
+    try {
+      dek = generateDEK();
+      const encrypted = await encryptVaultData(decryptedData, dek);
+      const shamirShares = splitDEKIntoShamirShares(dek, threshold, totalShares);
+      const sealedShares = activeNominees.map((nominee, index) => ({
+        share_index: index + 1,
+        custodian_name: nominee.full_name,
+        nominee_id: nominee.id,
+        nominee_public_key: nomineeKeys[nominee.id].publicKey,
+        encrypted_share_blob: sealShareForNominee(shamirShares[index], nomineeKeys[nominee.id].publicKey),
+      }));
+
+      const response = await api.post('/vault/rotate-key', {
+        vault_id: recoveryVaultId,
+        ciphertext: encrypted.ciphertext,
+        nonce: encrypted.nonce,
+        algorithm: encrypted.algorithm,
+        version: recoveryInfo.version,
+        threshold,
+        total_shares: totalShares,
+        shares: sealedShares,
+      });
+      setVaults(current => current.map(vault => vault.id === response.data.id ? response.data : vault));
+      setRecoveryInfo(current => ({
+        ...current,
+        version: response.data.version,
+        threshold: response.data.threshold,
+        total_shares: response.data.total_shares,
+        required_nominees: response.data.shares,
+      }));
+      setSubmittedShares(Array.from({ length: threshold }, (_, index) => ({
+        share_index: index + 1,
+        private_key: '',
+      })));
+      setDecryptedData(null);
+      setRecoveryResult(null);
+    } catch (error) {
+      setRotationError(error.response?.data?.detail || error.message || 'Could not securely re-share the vault key.');
+    } finally {
+      if (dek) dek.fill(0);
+      setRotating(false);
+    }
+  };
+
+  const activeNominees = nominees.slice(0, totalShares);
 
   return (
     <div className="space-y-8">
       {/* Security Banner */}
       <Alert type="success">
-        <strong>Zero-Knowledge Architecture</strong> — Your data is encrypted with AES-256-GCM <em>on this device</em> before it leaves your browser. The server stores only ciphertext. Decryption keys are split 2-of-3 using Shamir's Secret Sharing and sealed per-nominee with Curve25519 public-key cryptography.
+        <strong>Zero-Knowledge Architecture</strong> — Your data is encrypted with AES-256-GCM <em>on this device</em> before it leaves your browser. The server stores only ciphertext. Decryption keys are split using your selected {threshold}-of-{totalShares} Shamir policy and sealed per-nominee with Curve25519 public-key cryptography.
       </Alert>
 
       {/* ── CREATE VAULT ─────────────────────────────────────────────────── */}
@@ -303,6 +371,38 @@ function SecureVaultTab() {
             <p className="text-[11px] text-[#5D7765]">All fields are encrypted before leaving your device</p>
           </div>
           <Badge color="green">AES-256-GCM</Badge>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <label className="text-[10px] font-mono uppercase text-[#5D7765]">
+            Required trustees to recover
+            <select
+              value={threshold}
+              onChange={event => setThreshold(Number(event.target.value))}
+              className="mt-1 block w-full bg-[#060C08] border border-[#16291C] rounded-lg px-3 py-2 text-xs text-white normal-case"
+            >
+              {Array.from({ length: totalShares - 1 }, (_, index) => index + 2).map(value => (
+                <option key={value} value={value}>{value} shares required</option>
+              ))}
+            </select>
+          </label>
+          <label className="text-[10px] font-mono uppercase text-[#5D7765]">
+            Total trustees / shares
+            <select
+              value={totalShares}
+              onChange={event => {
+                const nextTotal = Number(event.target.value);
+                setTotalShares(nextTotal);
+                setThreshold(current => Math.min(current, nextTotal));
+              }}
+              className="mt-1 block w-full bg-[#060C08] border border-[#16291C] rounded-lg px-3 py-2 text-xs text-white normal-case"
+            >
+              {[2, 3, 4, 5].map(value => <option key={value} value={value}>{value} shares</option>)}
+            </select>
+          </label>
+          <p className="sm:col-span-2 text-[11px] text-[#8A9E91]">
+            Changing a vault's policy requires recovering it and securely re-sharing a newly encrypted key to all selected trustees.
+          </p>
         </div>
 
         {/* Vault name */}
@@ -365,9 +465,9 @@ function SecureVaultTab() {
 
           {loadingNominees ? (
             <div className="text-xs text-[#5D7765]">Loading nominees…</div>
-          ) : activeNominees.length < 3 ? (
+          ) : activeNominees.length < totalShares ? (
             <Alert type="warning">
-              You need at least 3 nominees for 2-of-3 Shamir splitting. You have {nominees.length}. <br />
+              You need at least {totalShares} nominees for a {threshold}-of-{totalShares} recovery policy. You have {nominees.length}. <br />
               <a href="#/nominees" className="underline text-amber-300">Go to Nominees page →</a>
             </Alert>
           ) : (
@@ -428,7 +528,7 @@ function SecureVaultTab() {
 
         <button
           onClick={handleCreateVault}
-          disabled={saving || activeNominees.length < 3}
+          disabled={saving || activeNominees.length < totalShares}
           className="w-full py-3 rounded-xl bg-[#34D399] hover:bg-[#2EB885] disabled:opacity-50 disabled:cursor-not-allowed text-black font-bold text-sm transition-all flex items-center justify-center gap-2 shadow-lg shadow-[#34D399]/10"
         >
           {saving ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Shield className="w-4 h-4" />}
@@ -448,6 +548,7 @@ function SecureVaultTab() {
               <div className="flex-1 min-w-0">
                 <div className="text-sm text-white font-semibold truncate">{v.name}</div>
                 <div className="text-[10px] font-mono text-[#5D7765]">ID: {v.id}</div>
+                  <div className="text-[10px] font-mono text-[#5D7765]">{v.threshold}-of-{v.total_shares} recovery policy</div>
               </div>
               <Badge color="green">{v.algorithm}</Badge>
               <Badge color="blue">v{v.version}</Badge>
@@ -470,7 +571,7 @@ function SecureVaultTab() {
           </div>
           <div>
             <h2 className="text-white font-bold text-base">Recover Vault</h2>
-            <p className="text-[11px] text-[#5D7765]">Any 2 of 3 nominee private keys can reconstruct and decrypt</p>
+            <p className="text-[11px] text-[#5D7765]">Provide the configured number of distinct trustee keys to reconstruct and decrypt</p>
           </div>
         </div>
 
@@ -501,7 +602,7 @@ function SecureVaultTab() {
               return (
                 <div key={idx} className="bg-[#060C08] border border-[#16291C] rounded-xl p-4 space-y-3">
                   <div className="flex items-center justify-between">
-                    <span className="text-xs font-mono text-[#34D399] font-bold">NOMINEE SHARE {idx + 1}</span>
+                    <span className="text-xs font-mono text-[#34D399] font-bold">TRUSTEE SHARE {idx + 1}</span>
                     <select
                       value={share.share_index || ''}
                       onChange={e => setSubmittedShares(prev => prev.map((s, i) => i === idx ? { ...s, share_index: Number(e.target.value) } : s))}
@@ -569,6 +670,19 @@ function SecureVaultTab() {
                 </div>
               ))}
             </div>
+            <Alert type="warning">
+              To change this vault's trustee threshold, the DEK and all sealed shares must be regenerated together.
+              The server will replace the ciphertext and policy atomically.
+            </Alert>
+            {rotationError && <Alert type="error">{rotationError}</Alert>}
+            <button
+              onClick={handleRotateRecoveredVault}
+              disabled={rotating}
+              className="w-full py-2.5 rounded-xl bg-amber-900/30 hover:bg-amber-900/50 border border-amber-700/50 text-amber-200 font-bold text-sm transition-all flex items-center justify-center gap-2"
+            >
+              {rotating ? <RefreshCw className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+              {rotating ? 'Re-encrypting & re-sharing…' : `Re-share with ${threshold}-of-${totalShares} policy`}
+            </button>
           </div>
         )}
       </section>
@@ -757,12 +871,12 @@ export default function VaultPage() {
         </div>
         <h1 className="text-4xl font-bold tracking-tight text-white flex flex-wrap items-center gap-3">
           Secure Vault
-          <Badge color="green">AES-256-GCM + Shamir 2-of-3</Badge>
+          <Badge color="green">AES-256-GCM + configurable Shamir</Badge>
           <Badge color="blue">Curve25519</Badge>
         </h1>
         <p className="text-sm text-[#8A9E91] mt-1 max-w-2xl">
           Zero-knowledge digital legacy vault. Your data never leaves your device in plaintext.
-          Any 2 of 3 nominees can reconstruct the key and decrypt.
+          The configured number of nominees can reconstruct the key and decrypt.
         </p>
       </div>
 

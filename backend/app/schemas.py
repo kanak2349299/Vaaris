@@ -1,6 +1,6 @@
 from typing import Optional, List
 from datetime import datetime
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 
 class UserBase(BaseModel):
     full_name: str
@@ -152,8 +152,14 @@ class ShamirShareOut(BaseModel):
 
 class ShamirSplitRequest(BaseModel):
     secret: Optional[str] = None
-    threshold: int = 2
-    total_shares: int = 3
+    threshold: int = Field(default=2, ge=2, le=5)
+    total_shares: int = Field(default=3, ge=2, le=5)
+
+    @model_validator(mode="after")
+    def validate_threshold(self):
+        if self.threshold > self.total_shares:
+            raise ValueError("Threshold cannot exceed the total number of shares.")
+        return self
 
 class ShamirSplitResponse(BaseModel):
     status: str
@@ -198,9 +204,15 @@ class VaultCreate(BaseModel):
     algorithm: str = "AES-256-GCM"
     version: int = 1
     salt: Optional[str] = None
-    threshold: int = 2
-    total_shares: int = 3
+    threshold: int = Field(default=2, ge=2, le=5)
+    total_shares: int = Field(default=3, ge=2, le=5)
     shares: List[VaultShareCreate]
+
+    @model_validator(mode="after")
+    def validate_threshold(self):
+        if self.threshold > self.total_shares:
+            raise ValueError("Threshold cannot exceed the total number of shares.")
+        return self
 
 class VaultOut(BaseModel):
     id: str
@@ -256,7 +268,15 @@ class VaultRotateKeyRequest(BaseModel):
     algorithm: str = "AES-256-GCM"
     version: int
     salt: Optional[str] = None
+    threshold: int = Field(default=2, ge=2, le=5)
+    total_shares: int = Field(default=3, ge=2, le=5)
     shares: List[VaultShareCreate]
+
+    @model_validator(mode="after")
+    def validate_threshold(self):
+        if self.threshold > self.total_shares:
+            raise ValueError("Threshold cannot exceed the total number of shares.")
+        return self
 
 class VaultAuditOut(BaseModel):
     id: str
@@ -268,4 +288,3 @@ class VaultAuditOut(BaseModel):
     created_at: datetime
     class Config:
         from_attributes = True
-

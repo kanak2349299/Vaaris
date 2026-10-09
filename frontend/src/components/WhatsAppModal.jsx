@@ -1,8 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useContext } from 'react';
 import { X, CheckCheck, Send, ExternalLink, ShieldCheck, Settings, Key, Check } from 'lucide-react';
 import api from '../services/api';
+import { AuthContext } from '../context/AuthContext';
 
 export default function WhatsAppModal({ onClose, onOpenHeirPortal }) {
+  const { user } = useContext(AuthContext);
   const [notifications, setNotifications] = useState([]);
   const [config, setConfig] = useState({ twilio_configured: false, mode: 'Mock Simulator' });
   const [heirs, setHeirs] = useState([]);
@@ -54,7 +56,7 @@ export default function WhatsAppModal({ onClose, onOpenHeirPortal }) {
   const selectedHeir = heirs.find(h => h.id === selectedHeirId) || heirs[0];
   const heirToken = selectedHeir?.access_token || 'VR-PRIYA-772';
   const portalUrl = `${window.location.origin}/heir/${heirToken}`;
-  const defaultBody = `??? Vaaris Alert: A digital legacy action associated with your trusted contact (Himangi Gupta) has been verified. Access key: ${heirToken}. Tap to view assigned digital assets: ${portalUrl}`;
+  const defaultBody = `Vaaris Alert: A digital legacy action associated with ${user?.full_name || 'your trusted contact'} has been reviewed. Access key: ${heirToken}. Tap to view assigned digital assets: ${portalUrl}`;
   const activeMessage = customMessage || defaultBody;
 
   const handleSaveTwilio = async (e) => {
